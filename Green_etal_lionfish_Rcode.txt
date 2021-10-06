@@ -1,0 +1,123 @@
+Broad-scale acoustic telemetry reveals long distance movements and larger home ranges for invasive lionfish (Pterois volitans) on Atlantic coral reefs
+
+Stephanie J. Green1 • Jordan K. Matley • D. Elizabeth Smith • Bernard Castillo II • John L. Akins • Richard S. Nemeth • Clayton Pollock • Kynoch Reale-Munroe
+
+
+###1) Process to differentiate between low and high survival scenarios
+
+#packages needed
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(sp)
+library(geosphere)
+
+#read in mock data
+#setwd()
+dat<-readRDS(paste(getwd(),"/mock_lionfish_df.rds",sep=""))
+
+#convert raw data to 30 min centers of activity (COA)
+dat$datetime_coa<-floor_date(dat$datetime_local, unit="30 minutes")
+dat<-dat %>% group_by(Transmitter,datetime_coa) %>% 
+  mutate(mlong=mean(Longitude),mlat=mean(Latitude)) %>% 
+  distinct(Transmitter,datetime_coa,.keep_all = TRUE) %>% 
+  dplyr::select(Transmitter,datetime_coa,mlong,mlat) %>%
+  data.frame()
+
+#add weekly grouping category
+dat$nearest_week<-as.Date(floor_date(dat$datetime_coa, unit="1 week"))
+head(dat)
+
+#calculate furthest distance between all COAs each week
+auxF<-function(x) {
+  require(sp)
+  tempsf <- dat[x, 3:4]
+  coordinates(tempsf) <- c("mlong", "mlat")
+  proj4string(tempsf) = "+proj=longlat +zone=20 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs" #change projection as needed
+  return(max(spDists(tempsf)))
+  }
+out1<-tapply(1:nrow(dat), dat$nearest_week, auxF)*1000
+out1<-data.frame(max_dist_weekly=out1)
+out1<-out1 %>% tibble::rownames_to_column(var=c("nearest_week"))
+out1$nearest_week<-as.Date(out1$nearest_week)
+dat1<-left_join(dat,out1,by="nearest_week")
+
+#set limit for max distance at 175m as 'survival' cutoff
+dat1<-dat1 %>% group_by(Transmitter,nearest_week) %>% mutate(S_cutoff1=ifelse(max(max_dist_weekly)<175,"High_S_only","High_Low_S")) %>% data.frame()
+head(dat1)
+unique(dat1$S_cutoff1)
+#High_S_only: high survival scenario only because the tag has not moved enough that week
+#High_Low_S: meets criteria to be included in both low and high survival scenarios for that week
+
+#create an additional cutoff to ensure all periods prior to the last week with detections >175 m apart (even if prior weeks are under this distance) are considered to be 'living' detections.
+dat2<-dat1 %>% group_by(Transmitter) %>% mutate(Last_High_S=max(subset(nearest_week,S_cutoff1 %in% "High_Low_S"))) %>% data.frame()
+dat2<-dat2 %>% group_by(Transmitter) %>% mutate(S_cutoff2=ifelse(nearest_week<=Last_High_S,"Low_S_include","Low_S_exclude")) %>% data.frame()
+head(dat2)
+unique(dat2$S_cutoff2)
+#Low_S_include: in low survival scenario, these detections are included. 
+#Low_S_exclude: in low survival scenario, these detections are excluded
+#Based on identifying last detection >175 m and including all detections prior to that 'surviving' detection.
+
+#plot to examine
+ggplot(data=dat2,aes(x=nearest_week,y=max_dist_weekly,colour=S_cutoff1))+geom_point()+facet_wrap(~Transmitter)
+ggplot(data=dat2,aes(x=nearest_week,y=max_dist_weekly,colour=S_cutoff2))+geom_point()+facet_wrap(~Transmitter) 
+
+#for script below, we are using the High Survival scenario - 'High_S_only' & 'High_Low_S' (i.e., keeping all data)
+
+###2) Residency Indices
+
+#add mock end periods for Detection RI (during detection period in array) and Tag-Life RI (during life of transmitter - 50 battery life here as example)
+
+#Detection RI
+#calculte number of days with more than 1 detection
+RI_a<-dat2 %>% mutate(date_coa=as.Date(datetime_coa)) %>% group_by(date_coa) %>% filter(length(date_coa)>1)
+RI_b<-n_distinct(RI_a$date_coa)
+RI_b
+
+#include number of days in detection period and calculate RI
+RI<-dat2 %>% group_by(Transmitter) %>% summarize(RI_observed=RI_b,RI_period=as.numeric(difftime(last(as.Date(datetime_coa)),as.Date(first(datetime_coa),units="days"))+1)) %>% data.frame()
+RI$D_RI_value<-RI$RI_observed/RI$RI_period                                                  
+
+#Tag-Life RI
+#add mock battery life of 50 days
+RI$TL_RI_value<-RI$RI_observed/50
+RI
+
+###3) Long-distant movements (defined in this example as movements >100m)
+#this example is based only on long movements between consecutive detections. An alternative approach would be estimating largest distance detected between all receivers during a certain time period (see section 1 above). Alternatively you can add distances between consecutive detections for a specific period (see section 4, but this is not necessarily identify directed long movements in space).
+head(dat2)
+long_move<-dat2 %>% group_by(Transmitter) %>% dplyr::mutate(next_datetime=lead(datetime_coa),next_long=lead(mlong),next_lat=lead(mlat)) %>% data.frame()
+head(long_move)
+#calculate approximate distance between consecutive detections
+long_move$dist_moved<-distHaversine(long_move[,3:4],long_move[,11:12]) 
+long_move_100<-long_move %>% filter(dist_moved>100) #100m
+
+long_move_100$time_diff=as.numeric(difftime(long_move_100$next_datetime,long_move_100$datetime_coa,units="secs"))
+long_move_100$time_diff_hrs=as.numeric(difftime(long_move_100$next_datetime,long_move_100$datetime_coa,units="hours"))
+#estimated rate of movement for each long-distant movement (NB: true path is not necessarily known so is likely an underestimate of actual movement rate)
+long_move_100$speed_ms<-long_move_100$dist_moved/long_move_100$time_diff
+
+###4) Rates of movements - in this example using a minimum of 12 consecutive 30min COAs
+head(long_move)
+long_move$hour<-as.numeric(format(long_move$datetime_coa,"%H"))
+#to calculate rates at different times of the day
+long_move$TOD<-ifelse(long_move$hour<6,"0-6hr",ifelse(long_move$hour>17,"18-24hr",ifelse(long_move$hour>5&long_move$hour<12,"6-12hr","12-18hr")))
+long_move$date_local<-as.Date(long_move$datetime_coa,tz="America/Puerto_Rico")
+move_rate<-long_move %>% group_by(Transmitter,date_local,TOD) %>% mutate(n_periods=length(TOD)) %>% filter(n_periods==12) %>% data.frame()
+
+#remove some fields from above
+move_rate$next_datetime<-NULL
+move_rate$next_long<-NULL
+move_rate$next_lat<-NULL
+move_rate$dist_moved<-NULL
+
+#now calculate rates for those that had 12 consecutive COAs
+move_rate<-move_rate %>% group_by(Transmitter,date_local,TOD) %>% mutate(lead_long=lead(mlong),lead_lat=lead(mlat)) %>% data.frame()
+move_rate <- move_rate[!is.na(move_rate$lead_long),]
+
+#calculate distance and rate
+move_rate$dist_moved<-distHaversine(move_rate[,3:4],move_rate[,14:15]) 
+head(move_rate)
+move_sum<-move_rate %>% group_by(Transmitter,date_local,TOD) %>% summarize(dist_moved_sum=sum(dist_moved)) %>% data.frame()
+move_sum$ROM<-(move_sum$dist_moved_sum/6)/(3600) #m/s
+head(move_sum)
