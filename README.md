@@ -1,0 +1,2 @@
+# lionfish_movement
+R code and sample data frames accompanying the open-access publication: Green, Stephanie J., Jordan K. Matley, D. Elizabeth Smith, Bernard Castillo II, John L. Akins, Richard S. Nemeth, Clayton Pollock, and Kynoch Reale-Munroe. "Broad-scale acoustic telemetry reveals long-distance movements and large home ranges for invasive lionfish on Atlantic coral reefs." Marine Ecology Progress Series 673 (2021): 117-134. https://www.int-res.com/abstracts/meps/v673/p117-134/
